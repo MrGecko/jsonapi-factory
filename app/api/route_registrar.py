@@ -11,7 +11,7 @@ from sqlalchemy.exc import OperationalError
 from app import JSONAPIResponseFactory, api_bp, db
 
 
-#TODO : séparer ?lightweight en with-relationships=links,data et without-relationships (ce dernier == lightweight actuel)
+#TODO : gérer PATCH,POST,DELETE,(PUT?)
 #TODO : gérer les références transitives (qui passent par des relations)
 #TODO : gérer les sparse fields
 
@@ -25,33 +25,59 @@ class JSONAPIRouteRegistrar(object):
         self.url_prefix = url_prefix
 
     @staticmethod
+    def get_relationships_mode(args):
+        if "without-relationships" in args:
+            w_rel_links = False
+            w_rel_data = False
+        else:
+            w_rel_links = True
+            w_rel_data = True
+            if "with-relationships" in args:
+                w_rel_args = request.args["with-relationships"].split(',')
+                if "links" not in w_rel_args:
+                    w_rel_links = False
+                if "data" not in w_rel_args:
+                    w_rel_data = False
+        return w_rel_links, w_rel_data
+
+    @staticmethod
+    def get_included_resources(asked_relationships, facade_obj):
+        try:
+            included_resources = OrderedDict({})
+            relationships = facade_obj.relationships
+            # iter over the relationships to be included
+            for inclusion in asked_relationships:
+                # try bring the related resources and add them to the list
+                related_resources = relationships[inclusion]["resource_getter"]()
+                # make unique keys to avoid duplicates
+                if isinstance(related_resources, list):
+                    for related_resource in related_resources:
+                        unique_key = (related_resource["type"], related_resource["id"])
+                        included_resources[unique_key] = related_resource
+                else:
+                    # the resource is a single object
+                    if related_resources is not None:
+                        unique_key = (related_resources["type"], related_resources["id"])
+                        included_resources[unique_key] = related_resources
+            return list(included_resources.values()), None
+        except KeyError as e:
+            return None, JSONAPIResponseFactory.make_errors_response(
+                {"status": 400, "details": "Cannot include the relationship %s" % str(e)}, status=400
+            )
+
+    @staticmethod
     def count(model):
         return db.session.query(func.count('*')).select_from(model).scalar()
 
     @staticmethod
     def make_url(url, args):
+        url = url.replace("[", "%5B").replace("]", "%5D")
         # recompose URL
-        return url + "?" + urllib.parse.urlencode(args)
-
-    @staticmethod
-    def get_included_resources(asked_relationships, facade_obj):
-        included_resources = OrderedDict({})
-        relationships = facade_obj.relationships
-        # iter over the relationships to be included
-        for inclusion in asked_relationships:
-            # try bring the related resources and add them to the list
-            related_resources = relationships[inclusion]["resource_getter"]()
-            # make unique keys to avoid duplicates
-            if isinstance(related_resources, list):
-                for related_resource in related_resources:
-                    unique_key = (related_resource["type"], related_resource["id"])
-                    included_resources[unique_key] = related_resource
-            else:
-                # the resource is a single object
-                if related_resources is not None:
-                    unique_key = (related_resources["type"], related_resources["id"])
-                    included_resources[unique_key] = related_resources
-        return list(included_resources.values())
+        parameters = urllib.parse.urlencode(args)
+        if len(parameters) > 0:
+            return "%s?%s" % (url, parameters)
+        else:
+            return url
 
     def register_get_routes(self, obj_getter, model, facade_class):
         """
@@ -94,9 +120,15 @@ class JSONAPIRouteRegistrar(object):
               Omit the prev link if the current page is the first one, omit the next link if it is the last one
             - Related resource inclusion :
               ?include=relationname1,relationname2
-            - Lightweight version
-              Adding a request parameter named lightweight allows the retrieveing of resources without their relationships
+            - Relationships inclusion
+              Adding a request parameter named without-relationships allows the retrieving of resources without their relationships
               It is much, much more efficient to do so.
+              Adding a parameter with-relationships allows to retrieve only links to relationships :
+                with-relationships (without values) retrieve both links and data
+                with-relationships=links,data retrieve both links and data
+                with-relationships=data retrieve both links and data
+                with-relationships=link only retrieve links
+              By default, if without-relationships or with-relationships are not specified, you retrieve everything from the relationships
             Return a 400 Bad Request if something goes wrong with the syntax or
              if the sort/filter criteriae are incorrect
             """
@@ -178,48 +210,44 @@ class JSONAPIRouteRegistrar(object):
                     count = JSONAPIRouteRegistrar.count(model)
                 nb_pages = max(1, ceil(count / page_size))
 
-                args["page[size]"] = page_size
+                keep_pagination = "page[size]" in args or "page[number]" in args or count > page_size
+                if keep_pagination:
+                    args["page[size]"] = page_size
                 links["self"] = JSONAPIRouteRegistrar.make_url(request.base_url, args)
-                args["page[number]"] = 1
-                links["first"] = JSONAPIRouteRegistrar.make_url(request.base_url, args)
-                args["page[number]"] = nb_pages
-                links["last"] = JSONAPIRouteRegistrar.make_url(request.base_url, args)
-                if num_page > 1:
-                    args["page[number]"] = max(1, num_page - 1)
-                    links["prev"] = JSONAPIRouteRegistrar.make_url(request.base_url, args)
-                if num_page < nb_pages:
-                    args["page[number]"] = min(nb_pages, num_page + 1)
-                    links["next"] = JSONAPIRouteRegistrar.make_url(request.base_url, args)
-                # else it is not paginated
-                #else:
-                #    links["self"] = request.url
-                #    all_objs = objs_query.all()
-                #    count = len(all_objs)
+
+                if keep_pagination:
+                    args["page[number]"] = 1
+                    links["first"] = JSONAPIRouteRegistrar.make_url(request.base_url, args)
+                    args["page[number]"] = nb_pages
+                    links["last"] = JSONAPIRouteRegistrar.make_url(request.base_url, args)
+                    if num_page > 1:
+                        n = max(1, num_page - 1)
+                        if n*page_size <= count:
+                            args["page[number]"] = max(1, num_page - 1)
+                            links["prev"] = JSONAPIRouteRegistrar.make_url(request.base_url, args)
+                    if num_page < nb_pages:
+                        args["page[number]"] = min(nb_pages, num_page + 1)
+                        links["next"] = JSONAPIRouteRegistrar.make_url(request.base_url, args)
+
+                # should we retrieve relationships too ?
+                w_rel_links, w_rel_data = JSONAPIRouteRegistrar.get_relationships_mode(request.args)
 
                 # finally retrieve the (eventually filtered, sorted, paginated) resources
-                lightweight = "lightweight" in request.args
-                with_relationships_links = not lightweight
-                with_relationships_data = not lightweight
-
-                facade_objs = [facade_class(url_prefix, obj, with_relationships_links, with_relationships_data)
+                facade_objs = [facade_class(url_prefix, obj, w_rel_links, w_rel_data)
                                for obj in all_objs]
 
                 # find out if related resources must be included too
                 included_resources = None
                 if "include" in request.args:
-                    try:
-                        included_resources = []
-                        for facade_obj in facade_objs:
-                            included_resources.extend(
-                                JSONAPIRouteRegistrar.get_included_resources(
-                                    request.args["include"].split(','),
-                                    facade_obj
-                                )
-                            )
-                    except KeyError as e:
-                        return JSONAPIResponseFactory.make_errors_response(
-                            {"status": 400, "details": "Cannot include the relationship %s" % str(e)}, status=400
+                    included_resources = []
+                    for facade_obj in facade_objs:
+                        included_res, errors = JSONAPIRouteRegistrar.get_included_resources(
+                            request.args["include"].split(','),
+                            facade_obj
                         )
+                        if errors:
+                            return errors
+                        included_resources.extend(included_res)
 
                 return JSONAPIResponseFactory.make_data_response(
                     [obj.resource for obj in facade_objs],
@@ -251,10 +279,16 @@ class JSONAPIRouteRegistrar(object):
             Support the following parameters:
             - Related resource inclusion :
               ?include=relationname1,relationname2
-            - Lightweight version
-              Adding a request parameter named lightweight allows the retrieveing of resources without their relationships
+            - Relationships inclusion
+              Adding a request parameter named without-relationships allows the retrieving of resources without their relationships
               It is much, much more efficient to do so.
-            Return a 400 Bad Request if something goes wrong with the syntax or
+              Adding a parameter with-relationships allows to retrieve only links to relationships :
+                with-relationships (without values) retrieve both links and data
+                with-relationships=links,data retrieve both links and data
+                with-relationships=data retrieve both links and data
+                with-relationships=link only retrieve links
+              By default, if without-relationships or with-relationships are not specified, you retrieve everything from the relationships
+             Return a 400 Bad Request if something goes wrong with the syntax or
              if the sort/filter criteriae are incorrect
             """
             url_prefix = request.host_url[:-1] + self.url_prefix
@@ -262,24 +296,22 @@ class JSONAPIRouteRegistrar(object):
             if obj is None:
                 return JSONAPIResponseFactory.make_errors_response(errors, **kwargs)
             else:
-                lightweight = "lightweight" in request.args
-                with_relationships_links = not lightweight
-                with_relationships_data = not lightweight
-                f_placename = facade_class(url_prefix, obj, with_relationships_links, with_relationships_data)
+
+                # should we retrieve relationships too ?
+                w_rel_links, w_rel_data = JSONAPIRouteRegistrar.get_relationships_mode(request.args)
+
+                f_placename = facade_class(url_prefix, obj, w_rel_links, w_rel_data)
                 links = {
                     "self": request.url
                 }
                 included_resources = None
                 if "include" in request.args:
-                    try:
-                        included_resources = JSONAPIRouteRegistrar.get_included_resources(
+                    included_resources, errors = JSONAPIRouteRegistrar.get_included_resources(
                             request.args["include"].split(","),
                             f_placename
-                        )
-                    except KeyError as e:
-                        return JSONAPIResponseFactory.make_errors_response(
-                            {"status": 400, "details": "Cannot include the relationship %s" % str(e)}, status=400
-                        )
+                    )
+                    if errors:
+                        return errors
 
                 return JSONAPIResponseFactory.make_data_response(
                     f_placename.resource, links=links, included_resources=included_resources, meta=None
@@ -346,8 +378,10 @@ class JSONAPIRouteRegistrar(object):
                         args["page[number]"] = nb_pages
                         paginated_links["last"] = JSONAPIRouteRegistrar.make_url(request.base_url, args)
                         if num_page > 1:
-                            args["page[number]"] = max(1, num_page - 1)
-                            paginated_links["prev"] = JSONAPIRouteRegistrar.make_url(request.base_url, args)
+                            n = max(1, num_page - 1)
+                            if n * page_size <= count:
+                                args["page[number]"] = max(1, num_page - 1)
+                                paginated_links["prev"] = JSONAPIRouteRegistrar.make_url(request.base_url, args)
                         if num_page < nb_pages:
                             args["page[number]"] = min(nb_pages, num_page + 1)
                             paginated_links["next"] = JSONAPIRouteRegistrar.make_url(request.base_url, args)
@@ -359,15 +393,12 @@ class JSONAPIRouteRegistrar(object):
                     # try to include related resources if requested
                     included_resources = None
                     if "include" in request.args:
-                        try:
-                            included_resources = JSONAPIRouteRegistrar.get_included_resources(
-                                request.args["include"].split(","),
-                                facade_obj
-                            )
-                        except KeyError as e:
-                            return JSONAPIResponseFactory.make_errors_response(
-                                {"status": 400, "details": "Cannot include the relationship %s" % str(e)}, status=400
-                            )
+                        included_resources, errors = JSONAPIRouteRegistrar.get_included_resources(
+                            request.args["include"].split(","),
+                            facade_obj
+                        )
+                        if errors:
+                            return errors
 
                     return JSONAPIResponseFactory.make_data_response(
                         data, links=links, included_resources=included_resources, meta={"total-count": count}, **kwargs
@@ -436,14 +467,16 @@ class JSONAPIRouteRegistrar(object):
                         nb_pages = max(1, ceil(count / page_size))
 
                         args["page[size]"] = page_size
-                        paginated_links["self"] = JSONAPIRouteRegistrar.make_url(links["self"], args)
+                        paginated_links["self"] = JSONAPIRouteRegistrar.make_url(request.base_url, args)
                         args["page[number]"] = 1
                         paginated_links["first"] = JSONAPIRouteRegistrar.make_url(request.base_url, args)
                         args["page[number]"] = nb_pages
                         paginated_links["last"] = JSONAPIRouteRegistrar.make_url(request.base_url, args)
                         if num_page > 1:
-                            args["page[number]"] = max(1, num_page - 1)
-                            paginated_links["prev"] = JSONAPIRouteRegistrar.make_url(request.base_url, args)
+                            n = max(1, num_page - 1)
+                            if n * page_size <= count:
+                                args["page[number]"] = max(1, num_page - 1)
+                                paginated_links["prev"] = JSONAPIRouteRegistrar.make_url(request.base_url, args)
                         if num_page < nb_pages:
                             args["page[number]"] = min(nb_pages, num_page + 1)
                             paginated_links["next"] = JSONAPIRouteRegistrar.make_url(request.base_url, args)
@@ -455,15 +488,12 @@ class JSONAPIRouteRegistrar(object):
                     # try to include related resources if requested
                     included_resources = None
                     if "include" in request.args:
-                        try:
-                            included_resources = JSONAPIRouteRegistrar.get_included_resources(
-                                request.args["include"].split(","),
-                                facade_obj
-                            )
-                        except KeyError as e:
-                            return JSONAPIResponseFactory.make_errors_response(
-                                {"status": 400, "details": "Cannot include the relationship %s" % str(e)}, status=400
-                            )
+                        included_resources, errors = JSONAPIRouteRegistrar.get_included_resources(
+                            request.args["include"].split(","),
+                            facade_obj
+                        )
+                        if errors:
+                            return errors
 
                     return JSONAPIResponseFactory.make_data_response(
                         resource_data, links=links, included_resources=included_resources, meta={"total-count": count},

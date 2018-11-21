@@ -33,6 +33,10 @@ class Config(object):
     API_VERSION = parse_var_env('API_VERSION')
     API_URL_PREFIX = parse_var_env('API_URL_PREFIX')
 
+    @staticmethod
+    def init_app(app):
+        pass
+
 
 class DevelopmentConfig(Config):
 

@@ -1,4 +1,5 @@
 from app.api.abstract_facade import JSONAPIAbstractFacade
+from app.models import Document
 
 
 class DocumentFacade(JSONAPIAbstractFacade):
@@ -12,13 +13,16 @@ class DocumentFacade(JSONAPIAbstractFacade):
     def id(self):
         return self.obj.id
 
-    @property
-    def type(self):
-        return self.TYPE
-
-    @property
-    def type_plural(self):
-        return self.TYPE_PLURAL
+    @staticmethod
+    def get_obj(doc_id):
+        e = Document.query.filter(Document.id == doc_id).first()
+        if e is None:
+            kwargs = {"status": 404}
+            errors = [{"status": 404, "title": "document %s does not exist" % doc_id}]
+        else:
+            kwargs = {}
+            errors = []
+        return e, kwargs, errors
 
     def get_editors_resource_identifiers(self):
         from app.api.editor.facade import EditorFacade
@@ -68,7 +72,7 @@ class DocumentFacade(JSONAPIAbstractFacade):
         }
 
         if self.obj.origin_date:
-            self.resource["attributes"]["origin-date-interval-label"] = self.obj.origin_date.interval_label
+            self.resource["attributes"]["origin-date-range-label"] = self.obj.origin_date.range_label
 
         if self.with_relationships_links:
             self.resource["relationships"] = self.get_exposed_relationships()

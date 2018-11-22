@@ -1,4 +1,5 @@
 from app.api.abstract_facade import JSONAPIAbstractFacade
+from app.models import Editor
 
 
 class EditorFacade(JSONAPIAbstractFacade):
@@ -12,14 +13,6 @@ class EditorFacade(JSONAPIAbstractFacade):
     def id(self):
         return self.obj.id
 
-    @property
-    def type(self):
-        return self.TYPE
-
-    @property
-    def type_plural(self):
-        return self.TYPE_PLURAL
-
     def get_documents_resource_identifiers(self):
         from app.api.document.facade import DocumentFacade
         return [] if self.obj.documents is None else [DocumentFacade.make_resource_identifier(d.id, DocumentFacade.TYPE)
@@ -31,6 +24,17 @@ class EditorFacade(JSONAPIAbstractFacade):
                                                                      self.with_relationships_links,
                                                                      self.with_relationships_data).resource
                                                       for d in self.obj.documents]
+
+    @staticmethod
+    def get_obj(doc_id):
+        e = Editor.query.filter(Editor.id == doc_id).first()
+        if e is None:
+            kwargs = {"status": 404}
+            errors = [{"status": 404, "title": "editor %s does not exist" % doc_id}]
+        else:
+            kwargs = {}
+            errors = []
+        return e, kwargs, errors
 
     def __init__(self, *args, **kwargs):
         super(EditorFacade, self).__init__(*args, **kwargs)

@@ -11,9 +11,10 @@ from sqlalchemy.exc import OperationalError
 from app import JSONAPIResponseFactory, api_bp, db
 
 
-#TODO : gérer PATCH,POST,DELETE,(PUT?)
-#TODO : gérer les références transitives (qui passent par des relations)
-#TODO : gérer les sparse fields
+#TODO: penser à l'auth pour toutes les méthodes. plus globalement penser aux décorateurs de routes
+#TODO: gérer PATCH,POST,DELETE,(PUT?)
+#TODO: gérer les références transitives (qui passent par des relations)
+#TODO: gérer les sparse fields
 
 class JSONAPIRouteRegistrar(object):
     """
@@ -79,13 +80,42 @@ class JSONAPIRouteRegistrar(object):
         else:
             return url
 
-    def register_get_routes(self, obj_getter, model, facade_class):
+    def register_post_routes(self, obj_setter, model, facade_class):
+        """
+
+        :param model:
+        :param facade_class:
+        :param obj_setter:
+        :param facade_class:
+        :return:
+        """
+
+        def single_obj_endpoint(id):
+            #TODO: get POST data
+
+            # créer obj
+
+            #TODO: gérer 403, 404, 409
+            #TODO: gérer 201, 204
+            pass
+
+        single_obj_rule = '/api/{api_version}/{type_plural}/<id>'.format(
+            api_version=self.api_version,
+            type_plural=facade_class.TYPE_PLURAL
+        )
+
+        single_obj_endpoint.__name__ = "post_%s_%s" % (facade_class.TYPE_PLURAL.replace("-", "_"), single_obj_endpoint.__name__)
+        # register the rule
+        api_bp.add_url_rule(single_obj_rule, endpoint=single_obj_endpoint.__name__, view_func=single_obj_endpoint,
+                            methods=["POST"])
+
+    def register_get_routes(self, model, facade_class):
         """
 
         :param model:
         :param facade_class:
         :param obj_getter:
-        :param facade:
+        :param facade_class:
         :return:
         """
 
@@ -292,7 +322,7 @@ class JSONAPIRouteRegistrar(object):
              if the sort/filter criteriae are incorrect
             """
             url_prefix = request.host_url[:-1] + self.url_prefix
-            obj, kwargs, errors = obj_getter(id)
+            obj, kwargs, errors = facade_class.get_obj(id)
             if obj is None:
                 return JSONAPIResponseFactory.make_errors_response(errors, **kwargs)
             else:
@@ -321,7 +351,7 @@ class JSONAPIRouteRegistrar(object):
         # register the rule
         api_bp.add_url_rule(single_obj_rule, endpoint=single_obj_endpoint.__name__, view_func=single_obj_endpoint)
 
-    def register_relationship_get_route(self, obj_getter, facade_class, rel_name):
+    def register_relationship_get_route(self, facade_class, rel_name):
         """
         Supported request parameters :
             - Related resource inclusion :
@@ -345,7 +375,7 @@ class JSONAPIRouteRegistrar(object):
 
         def resource_relationship_endpoint(id):
             url_prefix = request.host_url[:-1] + self.url_prefix
-            obj, kwargs, errors = obj_getter(id)
+            obj, kwargs, errors = facade_class.get_obj(id)
 
             if obj is None:
                 return JSONAPIResponseFactory.make_errors_response(errors, **kwargs)
@@ -438,7 +468,7 @@ class JSONAPIRouteRegistrar(object):
                   Omit the prev link if the current page is the first one, omit the next link if it is the last one
             """
             url_prefix = request.host_url[:-1] + self.url_prefix
-            obj, kwargs, errors = obj_getter(id)
+            obj, kwargs, errors = facade_class.get_obj(id)
             if obj is None:
                 return JSONAPIResponseFactory.make_errors_response(errors, **kwargs)
             else:

@@ -18,20 +18,20 @@ class JSONAPIAbstractFacade(object):
         self.with_relationships_links = with_relationships_links
 
         self.self_link = "{url_prefix}/{type_plural}/{id}".format(
-            url_prefix=self.url_prefix, type_plural=self.type_plural, id=self.id
+            url_prefix=self.url_prefix, type_plural=self.TYPE_PLURAL, id=self.id
         )
 
         self.resource_identifier = {
-            "type": self.type,
+            "type": self.TYPE,
             "id": self.id
         }
 
         self._links_template = {
             "self": "{url_prefix}/{source_col}/{source_id}/relationships".format(
-                    url_prefix=self.url_prefix, source_col=self.type_plural, source_id=self.id
+                    url_prefix=self.url_prefix, source_col=self.TYPE_PLURAL, source_id=self.id
             ),
             "related": "{url_prefix}/{source_col}/{source_id}".format(
-                    url_prefix=self.url_prefix, source_col=self.type_plural, source_id=self.id
+                    url_prefix=self.url_prefix, source_col=self.TYPE_PLURAL, source_id=self.id
             )
         }
 
@@ -39,14 +39,6 @@ class JSONAPIAbstractFacade(object):
 
     @property
     def id(self):
-        raise NotImplementedError
-
-    @property
-    def type(self):
-        raise NotImplementedError
-
-    @property
-    def type_plural(self):
         raise NotImplementedError
 
     @staticmethod
@@ -59,6 +51,10 @@ class JSONAPIAbstractFacade(object):
             return self.obj.__searchable__
         else:
             return []
+
+    @staticmethod
+    def get_obj(*args, **kwargs):
+        raise NotImplementedError
 
     @property
     def meta(self):

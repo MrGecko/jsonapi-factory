@@ -77,30 +77,30 @@ association_editor_edits_document = db.Table('editor_edits_document',
 )
 
 
-class DateInterval(SearchableMixin, db.Model):
+class DateRange(SearchableMixin, db.Model):
     """ """
-    __tablename__ = 'date_interval'
+    __tablename__ = 'date_range'
     __searchable__ = []
 
     id = db.Column("id", db.Integer, primary_key=True, autoincrement=True)
 
     begin = db.Column("begin", db.Date, nullable=False)
     begin_label = db.Column("begin_label", db.String(10))
-    begin_certainty = db.Column("begin_certainty", db.Float, default=1)
+    begin_confidence = db.Column("begin_confidence", db.Float, default=1)
 
     end = db.Column("end", db.Date)
     end_label = db.Column("end_label", db.String(10))
-    end_certainty = db.Column("end_certainty", db.Float)
+    end_confidence = db.Column("end_confidence", db.Float)
 
     @property
-    def interval(self):
+    def range(self):
         if self.end:
             return "%s-%s" % (self.begin, self.end)
         else:
             return str(self.begin)
 
     @property
-    def interval_label(self):
+    def range_label(self):
         if self.end_label:
             return "%s-%s" % (self.begin_label, self.end_label)
         else:
@@ -116,8 +116,8 @@ class Document(SearchableMixin, db.Model):
     title = db.Column("title", db.String(256))
     subtitle = db.Column("subtitle", db.String(256))
 
-    origin_date_id = db.Column("origin_date_id", db.Integer, db.ForeignKey("date_interval.id"))
-    origin_date = db.relationship("DateInterval")
+    origin_date_id = db.Column("origin_date_id", db.Integer, db.ForeignKey("date_range.id"))
+    origin_date = db.relationship("DateRange")
 
 
 class Editor(SearchableMixin, db.Model):

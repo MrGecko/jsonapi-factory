@@ -322,29 +322,32 @@ class JSONAPIRouteRegistrar(object):
              if the sort/filter criteriae are incorrect
             """
             url_prefix = request.host_url[:-1] + self.url_prefix
-            obj, kwargs, errors = facade_class.get_obj(id)
-            if obj is None:
+            f_obj, kwargs, errors = facade_class.make_facade(url_prefix, id)
+
+            if f_obj is None:
                 return JSONAPIResponseFactory.make_errors_response(errors, **kwargs)
             else:
 
                 # should we retrieve relationships too ?
                 w_rel_links, w_rel_data = JSONAPIRouteRegistrar.get_relationships_mode(request.args)
+                f_obj.set_relationships_mode(w_rel_links, w_rel_data)
 
-                f_placename = facade_class(url_prefix, obj, w_rel_links, w_rel_data)
                 links = {
                     "self": request.url
                 }
+
+                # is there any other resources to include ?
                 included_resources = None
                 if "include" in request.args:
                     included_resources, errors = JSONAPIRouteRegistrar.get_included_resources(
-                            request.args["include"].split(","),
-                            f_placename
+                        request.args["include"].split(","),
+                        f_obj
                     )
                     if errors:
                         return errors
 
                 return JSONAPIResponseFactory.make_data_response(
-                    f_placename.resource, links=links, included_resources=included_resources, meta=None
+                    f_obj.resource, links=links, included_resources=included_resources, meta=None
                 )
 
         single_obj_endpoint.__name__ = "%s_%s" % (facade_class.TYPE_PLURAL.replace("-", "_"), single_obj_endpoint.__name__)
@@ -375,13 +378,12 @@ class JSONAPIRouteRegistrar(object):
 
         def resource_relationship_endpoint(id):
             url_prefix = request.host_url[:-1] + self.url_prefix
-            obj, kwargs, errors = facade_class.get_obj(id)
+            f_obj, kwargs, errors = facade_class.make_facade(url_prefix, id)
 
-            if obj is None:
+            if f_obj is None:
                 return JSONAPIResponseFactory.make_errors_response(errors, **kwargs)
             else:
-                facade_obj = facade_class(url_prefix, obj)
-                relationship = facade_obj.relationships[rel_name]
+                relationship = f_obj.relationships[rel_name]
                 data = relationship["resource_identifier_getter"]()
                 count = len(data)
                 links = relationship["links"]
@@ -425,7 +427,7 @@ class JSONAPIRouteRegistrar(object):
                     if "include" in request.args:
                         included_resources, errors = JSONAPIRouteRegistrar.get_included_resources(
                             request.args["include"].split(","),
-                            facade_obj
+                            f_obj
                         )
                         if errors:
                             return errors
@@ -468,12 +470,11 @@ class JSONAPIRouteRegistrar(object):
                   Omit the prev link if the current page is the first one, omit the next link if it is the last one
             """
             url_prefix = request.host_url[:-1] + self.url_prefix
-            obj, kwargs, errors = facade_class.get_obj(id)
-            if obj is None:
+            f_obj, kwargs, errors = facade_class.make_facade(url_prefix, id)
+            if f_obj is None:
                 return JSONAPIResponseFactory.make_errors_response(errors, **kwargs)
             else:
-                facade_obj = facade_class(url_prefix, obj)
-                relationship = facade_obj.relationships[rel_name]
+                relationship = f_obj.relationships[rel_name]
                 resource_data = relationship["resource_getter"]()
                 if resource_data is None:
                     count = 0
@@ -520,7 +521,7 @@ class JSONAPIRouteRegistrar(object):
                     if "include" in request.args:
                         included_resources, errors = JSONAPIRouteRegistrar.get_included_resources(
                             request.args["include"].split(","),
-                            facade_obj
+                            f_obj
                         )
                         if errors:
                             return errors

@@ -1,6 +1,5 @@
-import unittest
 
-from tests.base_server import TestBaseServer, json_loads
+from tests.base_server import TestBaseServer
 from app import db
 
 
@@ -24,3 +23,6 @@ class TestGetRoutes(TestBaseServer):
         self._test_pagination_links("documents/2/editors?page[size]=1&page[number]=2")
         self._test_pagination_links("documents/2/editors?page[size]=2&page[number]=1")
         self._test_pagination_links("documents/2/editors?page[number]=3")
+
+    def test_relationships_routes(self):
+        pass

@@ -59,7 +59,7 @@ def create_app(config_name="dev"):
 
     app.db = db
 
-    #app.elasticsearch = Elasticsearch([app.config['ELASTICSEARCH_URL']]) if app.config['ELASTICSEARCH_URL'] else None
+    app.elasticsearch = Elasticsearch([app.config['ELASTICSEARCH_URL']]) if app.config['ELASTICSEARCH_URL'] else None
 
     # =====================================
     # Import models & app routes

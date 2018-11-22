@@ -1,5 +1,20 @@
+
 from app.api.abstract_facade import JSONAPIAbstractFacade
 from app.models import Document
+
+
+# decorator for test purposes
+def decorator_function_with_arguments(arg1, arg2, arg3):
+    def wrap(f):
+        print("Inside wrap()")
+        def wrapped_f(*args):
+            print("Inside wrapped_f()")
+            print("Decorator arguments:", arg1, arg2, arg3)
+            res = f(*args)
+            print("After f(*args)")
+            return res
+        return wrapped_f
+    return wrap
 
 
 class DocumentFacade(JSONAPIAbstractFacade):
@@ -14,7 +29,12 @@ class DocumentFacade(JSONAPIAbstractFacade):
         return self.obj.id
 
     @staticmethod
-    def get_obj(doc_id):
+    def get_model():
+        return Document
+
+    @staticmethod
+    @decorator_function_with_arguments("decorated", "resource", "!")
+    def make_facade(url_prefix, doc_id):
         e = Document.query.filter(Document.id == doc_id).first()
         if e is None:
             kwargs = {"status": 404}
@@ -22,6 +42,7 @@ class DocumentFacade(JSONAPIAbstractFacade):
         else:
             kwargs = {}
             errors = []
+            e = DocumentFacade(url_prefix, e)
         return e, kwargs, errors
 
     def get_editors_resource_identifiers(self):
@@ -29,6 +50,7 @@ class DocumentFacade(JSONAPIAbstractFacade):
         return [] if self.obj.editors is None else [EditorFacade.make_resource_identifier(e.id, EditorFacade.TYPE)
                                                     for e in self.obj.editors]
 
+    @decorator_function_with_arguments("decorated", "resource", "getter")
     def get_editors_resources(self):
         from app.api.editor.facade import EditorFacade
         return [] if self.obj.editors is None else [EditorFacade(self.url_prefix, e,
@@ -76,5 +98,3 @@ class DocumentFacade(JSONAPIAbstractFacade):
 
         if self.with_relationships_links:
             self.resource["relationships"] = self.get_exposed_relationships()
-
-

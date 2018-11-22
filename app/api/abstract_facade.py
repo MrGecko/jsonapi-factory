@@ -36,14 +36,12 @@ class JSONAPIAbstractFacade(object):
         }
 
         self.relationships = {}
+        self.resource = {}
+        self.resource_decorators = {}
 
     @property
     def id(self):
         raise NotImplementedError
-
-    @staticmethod
-    def make_resource_identifier(id, type):
-        return {"id": id, "type": type}
 
     @property
     def search_fields(self):
@@ -52,13 +50,25 @@ class JSONAPIAbstractFacade(object):
         else:
             return []
 
-    @staticmethod
-    def get_obj(*args, **kwargs):
-        raise NotImplementedError
-
     @property
     def meta(self):
         return {}
+
+    @staticmethod
+    def get_model():
+        raise NotImplementedError
+
+    @staticmethod
+    def make_resource_identifier(id, type):
+        return {"id": id, "type": type}
+
+    @staticmethod
+    def make_facade(*args, **kwargs):
+        raise NotImplementedError
+
+    def set_relationships_mode(self, w_rel_links, w_rel_data):
+        self.with_relationships_links = w_rel_links
+        self.with_relationships_data = w_rel_data
 
     def _get_links(self, rel_name):
         return {

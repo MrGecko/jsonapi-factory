@@ -1,8 +1,9 @@
-from math import ceil
-
-from collections import OrderedDict
-
+import json
 import urllib
+import sys
+
+from math import ceil
+from collections import OrderedDict
 
 from flask import request
 from sqlalchemy import func, desc, asc
@@ -10,11 +11,18 @@ from sqlalchemy.exc import OperationalError
 
 from app import JSONAPIResponseFactory, api_bp, db
 
+if sys.version_info < (3, 6):
+    json_loads = lambda s: json_loads(s.decode("utf-8")) if isinstance(s, bytes) else json.loads(s)
+else:
+    json_loads = json.loads
 
-#TODO: penser à l'auth pour toutes les méthodes. plus globalement penser aux décorateurs de routes
-#TODO: gérer PATCH,POST,DELETE,(PUT?)
-#TODO: gérer les références transitives (qui passent par des relations)
-#TODO: gérer les sparse fields
+
+# TODO: voir si le param api_version est encore utile (on peut peut-être juste utiliser url_prefix
+# TODO: voir si on peut virer les références à model dans ce fichier et passer par la facade
+# TODO: gérer PATCH,POST,DELETE
+# TODO: gérer les références transitives (qui passent par des relations)
+# TODO: gérer les sparse fields
+
 
 class JSONAPIRouteRegistrar(object):
     """
@@ -24,6 +32,10 @@ class JSONAPIRouteRegistrar(object):
     def __init__(self, api_version, url_prefix):
         self.api_version = api_version
         self.url_prefix = url_prefix
+
+        # make a dict from models and their __tablename__
+        self.models = dict([(cls.__tablename__, cls) for cls in db.Model._decl_class_registry.values()
+                            if isinstance(cls, type) and issubclass(cls, db.Model)])
 
     @staticmethod
     def get_relationships_mode(args):
@@ -63,7 +75,7 @@ class JSONAPIRouteRegistrar(object):
             return list(included_resources.values()), None
         except KeyError as e:
             return None, JSONAPIResponseFactory.make_errors_response(
-                {"status": 400, "details": "Cannot include the relationship %s" % str(e)}, status=400
+                {"status": 404, "details": "Cannot include the relationship %s" % str(e)}, status=404
             )
 
     @staticmethod
@@ -80,31 +92,128 @@ class JSONAPIRouteRegistrar(object):
         else:
             return url
 
-    def register_post_routes(self, obj_setter, model, facade_class):
+    def register_post_routes(self, model, facade_class):
         """
 
         :param model:
         :param facade_class:
-        :param obj_setter:
-        :param facade_class:
         :return:
         """
 
-        def single_obj_endpoint(id):
-            #TODO: get POST data
-
-            # créer obj
-
-            #TODO: gérer 403, 404, 409
-            #TODO: gérer 201, 204
-            pass
-
-        single_obj_rule = '/api/{api_version}/{type_plural}/<id>'.format(
+        single_obj_rule = '/api/{api_version}/{type_plural}'.format(
             api_version=self.api_version,
             type_plural=facade_class.TYPE_PLURAL
         )
 
-        single_obj_endpoint.__name__ = "post_%s_%s" % (facade_class.TYPE_PLURAL.replace("-", "_"), single_obj_endpoint.__name__)
+        def single_obj_endpoint():
+            try:
+                request_data = json_loads(request.data)
+                if "data" not in request_data:
+                    return JSONAPIResponseFactory.make_errors_response(
+                        {"status": 403, "details": "Missing 'data' section" % request.data}, status=403
+                    )
+                else:
+                    # let's check the request body
+
+                    if "type" not in request_data["data"]:
+                        return JSONAPIResponseFactory.make_errors_response(
+                            {"status": 403, "details": "Missing 'type' attribute"}, status=403
+                        )
+
+                    if request_data["data"]["type"] != facade_class.TYPE:
+                        return JSONAPIResponseFactory.make_errors_response(
+                            {"status": 403, "details": "Wrong resource type"}, status=403
+                        )
+
+                    d = request_data["data"]
+                    id = d["id"] if "id" in d else None
+                    if id is None:
+                        # autoinc at the db level
+                        pass
+                    else:
+                        # check the client generated ID is OK else MUST fail here
+                        already_exists = model.query.filter(model.id == id).first() is not None
+                        if already_exists:
+                            return JSONAPIResponseFactory.make_errors_response(
+                                {"status": 409,
+                                 "details": "Wrong ID provided: conflicting with already existing resource"}, status=409
+                            )
+
+                    attributes = d["attributes"] if "attributes" in d else {}
+                    relationships = d["relationships"] if "relationships" in d else {}
+
+                    # TODO: test if relationships do not belong in this particular model
+                    # Test if the relationships are correctly formed and the if the related resources exist
+                    related_resources = {}
+                    for rel_name, rel in relationships.items():
+                        related_resources[rel_name] = []
+
+                        if "data" not in rel:
+                            return JSONAPIResponseFactory.make_errors_response(
+                                {"status": 403,
+                                 "details": "Section 'data' is missing from relationship '%s'" % rel_name},
+                                status=403
+                            )
+
+                        if not isinstance(rel["data"], list):
+                            rel_data = list(rel["data"])
+                        else:
+                            rel_data = rel["data"]
+
+                        for rel_item in rel_data:
+
+                            if "type" not in rel_item:
+                                return JSONAPIResponseFactory.make_errors_response(
+                                    {"status": 403,
+                                     "details": "Attribute 'type' is missing from an item of the relationship '%s'" % rel_name},
+                                    status=403
+                                )
+                            # In a relationship, you cant reference a resource which does not exist yet
+                            if "id" in rel_item:
+                                related_model = self.models.get(rel_item["type"], None)
+                                if related_model is None:
+                                    return JSONAPIResponseFactory.make_errors_response(
+                                        {"status": 403,
+                                         "details": "Resource %s from the relationship '%s' has a wrong 'type' value" % (rel_item, rel_name)},
+                                        status=403
+                                    )
+
+                                related_resource = related_model.query.filter(related_model.id == rel_item["id"]).first()
+                                if related_resource is None:
+                                    return JSONAPIResponseFactory.make_errors_response(
+                                        {"status": 404,
+                                         "details": "Relationship '%s' references a resource '%s' which does not exist" % (rel_name, rel_item)},
+                                        status=404
+                                    )
+                                else:
+                                    related_resources[rel_name].append(related_resource)
+                            else:
+                                return JSONAPIResponseFactory.make_errors_response(
+                                    {"status": 403,
+                                     "details": "Attribute 'id' is missing from an item of the relationship '%s'" % rel_name},
+                                    status=403
+                                )
+
+                    # create the resource from its facade
+                    resource, e = facade_class.create_resource(id, attributes, related_resources)
+                    if e is None:
+                        # RESPOND 201 CREATED
+                        if resource and "links" in resource and "self" in resource["links"]:
+                            headers = {"Location": resource["links"]["self"]}
+                        else:
+                            headers = {}
+                        return JSONAPIResponseFactory.make_data_response(resource, None, None, None, status=201,
+                                                                         headers=headers)
+                    else:
+                        return JSONAPIResponseFactory.make_errors_response(e)
+
+            except json.decoder.JSONDecodeError:
+                return JSONAPIResponseFactory.make_errors_response(
+                    {"status": 403, "details": "The request body is malformed"}, status=403
+                )
+
+        single_obj_endpoint.__name__ = "post_%s_%s" % (
+        facade_class.TYPE_PLURAL.replace("-", "_"), single_obj_endpoint.__name__)
         # register the rule
         api_bp.add_url_rule(single_obj_rule, endpoint=single_obj_endpoint.__name__, view_func=single_obj_endpoint,
                             methods=["POST"])
@@ -187,7 +296,7 @@ class JSONAPIRouteRegistrar(object):
                 # if request has search parameter
                 # (search request arg, search fieldnames)
                 search_parameters = [(f, [field.strip() for field in f[len('search['):-1].split(",")])
-                                      for f in request.args.keys() if f.startswith('search[') and f.endswith(']')]
+                                     for f in request.args.keys() if f.startswith('search[') and f.endswith(']')]
                 if len(search_parameters) > 0 or "search" in request.args:
                     if "search" in request.args:
                         expression = request.args["search"]
@@ -197,7 +306,8 @@ class JSONAPIRouteRegistrar(object):
                         expression = request.args[search_request_param]
 
                     print("search parameters: ", search_fields, expression)
-                    objs_query, count = model.search(expression, fields=search_fields, page=num_page, per_page=page_size)
+                    objs_query, count = model.search(expression, fields=search_fields, page=num_page,
+                                                     per_page=page_size)
 
                 # if request has filter parameter
                 filter_criteriae = []
@@ -230,7 +340,7 @@ class JSONAPIRouteRegistrar(object):
                 # apply the pagination after an eventual sort
                 if "search" in request.args:
                     all_objs = objs_query.all()  # the search feature has already paginated the results for us
-                    #TODO : this is bad because it is dependent on the search system (eg. good for us that elasticsearch provides pagination)
+                    # TODO : this is bad because it is dependent on the search system (eg. good for us that elasticsearch provides pagination)
                 else:
                     pagination_obj = objs_query.paginate(num_page, page_size, False)
                     all_objs = pagination_obj.items
@@ -252,7 +362,7 @@ class JSONAPIRouteRegistrar(object):
                     links["last"] = JSONAPIRouteRegistrar.make_url(request.base_url, args)
                     if num_page > 1:
                         n = max(1, num_page - 1)
-                        if n*page_size <= count:
+                        if n * page_size <= count:
                             args["page[number]"] = max(1, num_page - 1)
                             links["prev"] = JSONAPIRouteRegistrar.make_url(request.base_url, args)
                     if num_page < nb_pages:
@@ -292,7 +402,8 @@ class JSONAPIRouteRegistrar(object):
                     {"status": 400, "details": str(e)}, status=400
                 )
 
-        collection_endpoint.__name__ = "%s_%s" % (facade_class.TYPE_PLURAL.replace("-", "_"), collection_endpoint.__name__)
+        collection_endpoint.__name__ = "%s_%s" % (
+        facade_class.TYPE_PLURAL.replace("-", "_"), collection_endpoint.__name__)
         # register the rule
         api_bp.add_url_rule(get_collection_rule, endpoint=collection_endpoint.__name__, view_func=collection_endpoint)
 
@@ -322,7 +433,7 @@ class JSONAPIRouteRegistrar(object):
              if the sort/filter criteriae are incorrect
             """
             url_prefix = request.host_url[:-1] + self.url_prefix
-            f_obj, kwargs, errors = facade_class.make_facade(url_prefix, id)
+            f_obj, kwargs, errors = facade_class.get_resource_facade(url_prefix, id)
 
             if f_obj is None:
                 return JSONAPIResponseFactory.make_errors_response(errors, **kwargs)
@@ -350,7 +461,8 @@ class JSONAPIRouteRegistrar(object):
                     f_obj.resource, links=links, included_resources=included_resources, meta=None
                 )
 
-        single_obj_endpoint.__name__ = "%s_%s" % (facade_class.TYPE_PLURAL.replace("-", "_"), single_obj_endpoint.__name__)
+        single_obj_endpoint.__name__ = "%s_%s" % (
+        facade_class.TYPE_PLURAL.replace("-", "_"), single_obj_endpoint.__name__)
         # register the rule
         api_bp.add_url_rule(single_obj_rule, endpoint=single_obj_endpoint.__name__, view_func=single_obj_endpoint)
 
@@ -378,7 +490,7 @@ class JSONAPIRouteRegistrar(object):
 
         def resource_relationship_endpoint(id):
             url_prefix = request.host_url[:-1] + self.url_prefix
-            f_obj, kwargs, errors = facade_class.make_facade(url_prefix, id)
+            f_obj, kwargs, errors = facade_class.get_resource_facade(url_prefix, id)
 
             if f_obj is None:
                 return JSONAPIResponseFactory.make_errors_response(errors, **kwargs)
@@ -442,7 +554,8 @@ class JSONAPIRouteRegistrar(object):
                     )
 
         resource_relationship_endpoint.__name__ = "%s_%s_%s" % (
-            facade_class.TYPE_PLURAL.replace("-", "_"), rel_name.replace("-", "_"), resource_relationship_endpoint.__name__
+            facade_class.TYPE_PLURAL.replace("-", "_"), rel_name.replace("-", "_"),
+            resource_relationship_endpoint.__name__
         )
         # register the rule
         api_bp.add_url_rule(rule, endpoint=resource_relationship_endpoint.__name__,
@@ -470,7 +583,7 @@ class JSONAPIRouteRegistrar(object):
                   Omit the prev link if the current page is the first one, omit the next link if it is the last one
             """
             url_prefix = request.host_url[:-1] + self.url_prefix
-            f_obj, kwargs, errors = facade_class.make_facade(url_prefix, id)
+            f_obj, kwargs, errors = facade_class.get_resource_facade(url_prefix, id)
             if f_obj is None:
                 return JSONAPIResponseFactory.make_errors_response(errors, **kwargs)
             else:

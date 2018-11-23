@@ -55,15 +55,28 @@ class JSONAPIAbstractFacade(object):
         return {}
 
     @staticmethod
-    def get_model():
-        raise NotImplementedError
-
-    @staticmethod
     def make_resource_identifier(id, type):
         return {"id": id, "type": type}
 
     @staticmethod
-    def make_facade(*args, **kwargs):
+    def get_resource_facade(*args, **kwargs):
+        raise NotImplementedError
+
+    @staticmethod
+    def create_resource(id, attributes, related_resources):
+        resource = None
+        errors = None
+        print("creating resource '%s' from: " % id, attributes, related_resources)
+        #return resource, errors
+        raise NotImplementedError
+
+
+    @staticmethod
+    def update_resource(*args, **kwargs):
+        raise NotImplementedError
+
+    @staticmethod
+    def delete_resource(*args, **kwargs):
         raise NotImplementedError
 
     def set_relationships_mode(self, w_rel_links, w_rel_data):

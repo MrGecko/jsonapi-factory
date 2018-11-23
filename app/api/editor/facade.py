@@ -9,10 +9,6 @@ class EditorFacade(JSONAPIAbstractFacade):
     TYPE = "editor"
     TYPE_PLURAL = "editors"
 
-    @staticmethod
-    def get_model():
-        return Editor
-
     @property
     def id(self):
         return self.obj.id

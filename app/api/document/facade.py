@@ -6,7 +6,7 @@ from app.models import Document
 # decorator for test purposes
 def decorator_function_with_arguments(arg1, arg2, arg3):
     def wrap(f):
-        print("Inside wrap()")
+        print("Wrapping", f)
         def wrapped_f(*args):
             print("Inside wrapped_f()")
             print("Decorator arguments:", arg1, arg2, arg3)
@@ -29,12 +29,8 @@ class DocumentFacade(JSONAPIAbstractFacade):
         return self.obj.id
 
     @staticmethod
-    def get_model():
-        return Document
-
-    @staticmethod
     @decorator_function_with_arguments("decorated", "resource", "!")
-    def make_facade(url_prefix, doc_id):
+    def get_resource_facade(url_prefix, doc_id):
         e = Document.query.filter(Document.id == doc_id).first()
         if e is None:
             kwargs = {"status": 404}
@@ -45,12 +41,20 @@ class DocumentFacade(JSONAPIAbstractFacade):
             e = DocumentFacade(url_prefix, e)
         return e, kwargs, errors
 
+    @staticmethod
+    @decorator_function_with_arguments("I should be protected", "by an auth", "system !")
+    def create_resource(id, attributes, related_resources):
+        resource = None
+        errors = None
+        print("creating resource '%s' from:" % id, attributes, related_resources)
+        return resource, errors
+
     def get_editors_resource_identifiers(self):
         from app.api.editor.facade import EditorFacade
         return [] if self.obj.editors is None else [EditorFacade.make_resource_identifier(e.id, EditorFacade.TYPE)
                                                     for e in self.obj.editors]
 
-    @decorator_function_with_arguments("decorated", "resource", "getter")
+    @decorator_function_with_arguments("decorated", "relationship", "getter !")
     def get_editors_resources(self):
         from app.api.editor.facade import EditorFacade
         return [] if self.obj.editors is None else [EditorFacade(self.url_prefix, e,

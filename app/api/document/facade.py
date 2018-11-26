@@ -1,4 +1,4 @@
-
+from app import db
 from app.api.abstract_facade import JSONAPIAbstractFacade
 from app.models import Document
 
@@ -9,9 +9,7 @@ def decorator_function_with_arguments(arg1, arg2, arg3):
         print("Wrapping", f)
         def wrapped_f(*args):
             print("Inside wrapped_f()")
-            print("Decorator arguments:", arg1, arg2, arg3)
             res = f(*args)
-            print("After f(*args)")
             return res
         return wrapped_f
     return wrap
@@ -46,7 +44,16 @@ class DocumentFacade(JSONAPIAbstractFacade):
     def create_resource(id, attributes, related_resources):
         resource = None
         errors = None
-        print("creating resource '%s' from:" % id, attributes, related_resources)
+        try:
+            doc = Document(id=id, title=attributes.get("title"), subtitle=attributes.get("subtitle"))
+            doc.editors = related_resources.get("editors")
+            db.session.add(doc)
+            db.session.commit()
+            resource = doc
+        except Exception as e:
+            print(e)
+            errors = [{"status": 403, "title": "Error creating resource 'Document' with data: %s" % (str([id, attributes, related_resources]))}]
+            db.session.rollback()
         return resource, errors
 
     def get_editors_resource_identifiers(self):

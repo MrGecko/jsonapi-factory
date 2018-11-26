@@ -136,7 +136,7 @@ class JSONAPIRouteRegistrar(object):
                         if already_exists:
                             return JSONAPIResponseFactory.make_errors_response(
                                 {"status": 409,
-                                 "details": "Wrong ID provided: conflicting with already existing resource"}, status=409
+                                 "details": "The provided ID is conflicting with an already existing resource"}, status=409
                             )
 
                     attributes = d["attributes"] if "attributes" in d else {}
@@ -194,15 +194,20 @@ class JSONAPIRouteRegistrar(object):
                                     status=403
                                 )
 
-                    # create the resource from its facade
+                    # =====================================
+                    #  Create the resource from its facade
+                    # =====================================
                     resource, e = facade_class.create_resource(id, attributes, related_resources)
                     if e is None:
+                        f_obj = facade_class(self.url_prefix, resource, with_relationships_links=True,
+                                             with_relationships_data=False)
                         # RESPOND 201 CREATED
-                        if resource and "links" in resource and "self" in resource["links"]:
-                            headers = {"Location": resource["links"]["self"]}
+                        if "links" in f_obj.resource and "self" in f_obj.resource["links"]:
+                            headers = {"Location": f_obj.resource["links"]["self"]}
                         else:
                             headers = {}
-                        return JSONAPIResponseFactory.make_data_response(resource, None, None, None, status=201,
+                        meta = {"search-fields": getattr(model, "__searchable__", []), "total-count": 1}
+                        return JSONAPIResponseFactory.make_data_response(f_obj.resource, None, None, meta=meta, status=201,
                                                                          headers=headers)
                     else:
                         return JSONAPIResponseFactory.make_errors_response(e)

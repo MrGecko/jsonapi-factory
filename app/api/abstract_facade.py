@@ -1,3 +1,4 @@
+from app import db
 from app.models import SearchableMixin
 
 
@@ -88,6 +89,36 @@ class JSONAPIAbstractFacade(object):
             "self": "{template}/{rel_name}".format(template=self._links_template["self"], rel_name=rel_name),
             "related": "{template}/{rel_name}".format(template=self._links_template["related"], rel_name=rel_name)
         }
+
+    def set_resource_identifiers(self, attr, resource_identifiers, append_mode):
+        errors = {}
+        try:
+            if append_mode:
+                # append
+                old_vals = getattr(self.obj, attr)
+                setattr(self.obj, attr, old_vals + resource_identifiers)
+            else:
+                # replace
+                setattr(self.obj, attr, resource_identifiers)
+
+            db.session.add(self.obj)
+            db.session.commit()
+        except Exception as e:
+            print(e)
+            errors = {
+                "status": 403,
+                "title": "Error setting relationship",
+                "detail": str(e)
+            }
+            db.session.rollback()
+        return errors
+
+    def set_relationships(self, rel_name, resources, append_mode=True):
+        rel = self.relationships[rel_name]
+        if "resource_attribute" in rel:
+            self.set_resource_identifiers(rel["resource_attribute"], resources, append_mode)
+        else:
+            raise KeyError("Relationship '%s' has no resource identifier setter" % rel_name)
 
     def get_exposed_relationships(self):
         if self.with_relationships_data:

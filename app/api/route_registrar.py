@@ -92,6 +92,15 @@ class JSONAPIRouteRegistrar(object):
         else:
             return url
 
+    def get_obj_from_resource_identifier(self, resource_identifer, relationship_name):
+        related_model = self.models.get(resource_identifer["type"].replace("-", "_"), None)
+        if related_model is None:
+            return None, {"status": 403,
+                          "details": "Resource %s from the relationship '%s' has a wrong 'type' value" % (
+                              resource_identifer, relationship_name)
+                          }
+        return related_model.query.filter(related_model.id == resource_identifer["id"]).first(), None
+
     def register_post_routes(self, model, facade_class):
         """
 
@@ -108,120 +117,190 @@ class JSONAPIRouteRegistrar(object):
         def single_obj_endpoint():
             try:
                 request_data = json_loads(request.data)
-                if "data" not in request_data:
+            except json.decoder.JSONDecodeError:
+                return JSONAPIResponseFactory.make_errors_response(
+                    {"status": 403, "details": "The request body is malformed"}, status=403
+                )
+
+            if "data" not in request_data:
+                return JSONAPIResponseFactory.make_errors_response(
+                    {"status": 403, "details": "Missing 'data' section" % request.data}, status=403
+                )
+            else:
+                # let's check the request body
+                if "type" not in request_data["data"]:
                     return JSONAPIResponseFactory.make_errors_response(
-                        {"status": 403, "details": "Missing 'data' section" % request.data}, status=403
+                        {"status": 403, "details": "Missing 'type' attribute"}, status=403
                     )
+
+                if request_data["data"]["type"] != facade_class.TYPE:
+                    return JSONAPIResponseFactory.make_errors_response(
+                        {"status": 403, "details": "Wrong resource type"}, status=403
+                    )
+
+                d = request_data["data"]
+                id = d["id"] if "id" in d else None
+                if id is None:
+                    # autoinc at the db level
+                    pass
                 else:
-                    # let's check the request body
-
-                    if "type" not in request_data["data"]:
+                    # check the client generated ID is OK else MUST fail here
+                    already_exists = model.query.filter(model.id == id).first() is not None
+                    if already_exists:
                         return JSONAPIResponseFactory.make_errors_response(
-                            {"status": 403, "details": "Missing 'type' attribute"}, status=403
+                            {"status": 409,
+                             "details": "The provided ID is conflicting with an already existing resource"},
+                            status=409
                         )
 
-                    if request_data["data"]["type"] != facade_class.TYPE:
-                        return JSONAPIResponseFactory.make_errors_response(
-                            {"status": 403, "details": "Wrong resource type"}, status=403
-                        )
+                attributes = d["attributes"] if "attributes" in d else {}
+                relationships = d["relationships"] if "relationships" in d else {}
 
-                    d = request_data["data"]
-                    id = d["id"] if "id" in d else None
-                    if id is None:
-                        # autoinc at the db level
-                        pass
+                # Test if the relationships are correctly formed and the if the related resources exist
+                related_resources = {}
+                for rel_name, rel in relationships.items():
+                    related_resources[rel_name] = []
+
+                    if not rel or "data" not in rel:
+                        return JSONAPIResponseFactory.make_errors_response(
+                            {"status": 403,
+                             "details": "Section 'data' is missing from relationship '%s'" % rel_name},
+                            status=403
+                        )
+                    elif not rel["data"]:
+                        # if rel data is null then just skip this relationships
+                        continue
+
+                    if not isinstance(rel["data"], list):
+                        rel_data = [rel["data"]]
                     else:
-                        # check the client generated ID is OK else MUST fail here
-                        already_exists = model.query.filter(model.id == id).first() is not None
-                        if already_exists:
-                            return JSONAPIResponseFactory.make_errors_response(
-                                {"status": 409,
-                                 "details": "The provided ID is conflicting with an already existing resource"}, status=409
-                            )
+                        rel_data = rel["data"]
 
-                    attributes = d["attributes"] if "attributes" in d else {}
-                    relationships = d["relationships"] if "relationships" in d else {}
+                    for rel_item in rel_data:
 
-                    # TODO: test if relationships do not belong in this particular model
-                    # Test if the relationships are correctly formed and the if the related resources exist
-                    related_resources = {}
-                    for rel_name, rel in relationships.items():
-                        related_resources[rel_name] = []
-
-                        if "data" not in rel:
+                        if "type" not in rel_item:
                             return JSONAPIResponseFactory.make_errors_response(
                                 {"status": 403,
-                                 "details": "Section 'data' is missing from relationship '%s'" % rel_name},
+                                 "details": "Attribute 'type' is missing from an item of the relationship '%s'" % rel_name},
                                 status=403
                             )
 
-                        if not isinstance(rel["data"], list):
-                            rel_data = list(rel["data"])
+                        # In a relationship, you cant reference a resource which does not exist yet
+                        if "id" not in rel_item:
+                            return JSONAPIResponseFactory.make_errors_response(
+                                {"status": 403,
+                                 "details": "Attribute 'id' is missing from an item of the relationship '%s'" % rel_name},
+                                status=403
+                            )
                         else:
-                            rel_data = rel["data"]
-
-                        for rel_item in rel_data:
-
-                            if "type" not in rel_item:
-                                return JSONAPIResponseFactory.make_errors_response(
-                                    {"status": 403,
-                                     "details": "Attribute 'type' is missing from an item of the relationship '%s'" % rel_name},
-                                    status=403
-                                )
-                            # In a relationship, you cant reference a resource which does not exist yet
-                            if "id" in rel_item:
-                                related_model = self.models.get(rel_item["type"], None)
-                                if related_model is None:
-                                    return JSONAPIResponseFactory.make_errors_response(
-                                        {"status": 403,
-                                         "details": "Resource %s from the relationship '%s' has a wrong 'type' value" % (rel_item, rel_name)},
-                                        status=403
-                                    )
-
-                                related_resource = related_model.query.filter(related_model.id == rel_item["id"]).first()
-                                if related_resource is None:
-                                    return JSONAPIResponseFactory.make_errors_response(
-                                        {"status": 404,
-                                         "details": "Relationship '%s' references a resource '%s' which does not exist" % (rel_name, rel_item)},
-                                        status=404
-                                    )
-                                else:
-                                    related_resources[rel_name].append(related_resource)
+                            related_resource, errors = self.get_obj_from_resource_identifier(rel_item, rel_name)
+                            if related_resource is None:
+                                e = {
+                                        "status": 404,
+                                        "details": "Relationship '%s' references a resource"
+                                                   " '%s' which does not exist" % (rel_name, rel_item)
+                                    }
+                                if errors:
+                                    e = [e, errors]
+                                return JSONAPIResponseFactory.make_errors_response(e, status=404)
                             else:
-                                return JSONAPIResponseFactory.make_errors_response(
-                                    {"status": 403,
-                                     "details": "Attribute 'id' is missing from an item of the relationship '%s'" % rel_name},
-                                    status=403
-                                )
+                                related_resources[rel_name].append(related_resource)
 
-                    # =====================================
-                    #  Create the resource from its facade
-                    # =====================================
-                    resource, e = facade_class.create_resource(id, attributes, related_resources)
-                    if e is None:
-                        f_obj = facade_class(self.url_prefix, resource, with_relationships_links=True,
-                                             with_relationships_data=False)
-                        # RESPOND 201 CREATED
-                        if "links" in f_obj.resource and "self" in f_obj.resource["links"]:
-                            headers = {"Location": f_obj.resource["links"]["self"]}
-                        else:
-                            headers = {}
-                        meta = {"search-fields": getattr(model, "__searchable__", []), "total-count": 1}
-                        return JSONAPIResponseFactory.make_data_response(f_obj.resource, None, None, meta=meta, status=201,
-                                                                         headers=headers)
+                # =====================================
+                #  Create the resource from its facade
+                # =====================================
+                resource, e = facade_class.create_resource(id, attributes, related_resources)
+                if e is None:
+                    url_prefix = request.host_url[:-1] + self.url_prefix
+
+                    f_obj = facade_class(url_prefix, resource, with_relationships_links=True,
+                                         with_relationships_data=False)
+                    # RESPOND 201 CREATED
+                    if "links" in f_obj.resource and "self" in f_obj.resource["links"]:
+                        headers = {"Location": f_obj.resource["links"]["self"]}
                     else:
-                        return JSONAPIResponseFactory.make_errors_response(e)
+                        headers = {}
+                    meta = {"search-fields": getattr(model, "__searchable__", []), "total-count": 1}
+                    return JSONAPIResponseFactory.make_data_response(f_obj.resource, None, None, meta=meta,
+                                                                     status=201,
+                                                                     headers=headers)
+                else:
+                    return JSONAPIResponseFactory.make_errors_response(e)
+
+
+        single_obj_endpoint.__name__ = "post_%s_%s" % (
+            facade_class.TYPE_PLURAL.replace("-", "_"), single_obj_endpoint.__name__
+        )
+        # register the rule
+        api_bp.add_url_rule(single_obj_rule, endpoint=single_obj_endpoint.__name__, view_func=single_obj_endpoint,
+                            methods=["POST"])
+
+    def register_relationship_post_route(self, facade_class, rel_name):
+
+        # ===============================
+        # Relationships route
+        # ===============================
+        rule = '/api/{api_version}/{type_plural}/<id>/relationships/{rel_name}'.format(
+            api_version=self.api_version,
+            type_plural=facade_class.TYPE_PLURAL, rel_name=rel_name
+        )
+
+        def resource_relationship_endpoint(id):
+            try:
+                request_data = json_loads(request.data)
 
             except json.decoder.JSONDecodeError:
                 return JSONAPIResponseFactory.make_errors_response(
                     {"status": 403, "details": "The request body is malformed"}, status=403
                 )
 
-        single_obj_endpoint.__name__ = "post_%s_%s" % (
-        facade_class.TYPE_PLURAL.replace("-", "_"), single_obj_endpoint.__name__)
+            if "data" not in request_data:
+                return JSONAPIResponseFactory.make_errors_response(
+                    {"status": 403, "details": "Missing 'data' section" % request.data}, status=403
+                )
+            else:
+                if not isinstance(request_data["data"], list):
+                    request_data = [request_data["data"]]
+                else:
+                    request_data = request_data["data"]
+
+                related_resources = []
+                for rdi in request_data:
+                    related_resource, errors = self.get_obj_from_resource_identifier(rdi, rel_name)
+                    if errors:
+                        return JSONAPIResponseFactory.make_errors_response(errors, status=403)
+
+                    if related_resource is None:
+                        return JSONAPIResponseFactory.make_errors_response(
+                            {"status": 404, "details": "Resource %s does not exist" % rdi}, status=404
+                        )
+                    related_resources.append(related_resource)
+
+                # ==============================
+                # post the relationships links
+                # ==============================
+                url_prefix = request.host_url[:-1] + self.url_prefix
+                f_obj, kwargs, errors = facade_class.get_resource_facade(url_prefix, id)
+
+                if f_obj is None:
+                    return JSONAPIResponseFactory.make_errors_response(errors, **kwargs)
+
+                f_obj.set_relationships(rel_name, related_resources, append_mode=True)
+
+                # return 204 NO CONTENT  (why is 204 that slow ??)
+                return JSONAPIResponseFactory.make_data_response(None, None, None, None, status=204)
+
+        resource_relationship_endpoint.__name__ = "post_%s_%s_%s" % (
+            facade_class.TYPE_PLURAL.replace("-", "_"), rel_name.replace("-", "_"),
+            resource_relationship_endpoint.__name__
+        )
         # register the rule
-        api_bp.add_url_rule(single_obj_rule, endpoint=single_obj_endpoint.__name__, view_func=single_obj_endpoint,
-                            methods=["POST"])
+        api_bp.add_url_rule(
+            rule,
+            endpoint=resource_relationship_endpoint.__name__,
+            view_func=resource_relationship_endpoint,
+            methods=["POST"]
+        )
 
     def register_get_routes(self, model, facade_class):
         """
@@ -408,7 +487,7 @@ class JSONAPIRouteRegistrar(object):
                 )
 
         collection_endpoint.__name__ = "%s_%s" % (
-        facade_class.TYPE_PLURAL.replace("-", "_"), collection_endpoint.__name__)
+            facade_class.TYPE_PLURAL.replace("-", "_"), collection_endpoint.__name__)
         # register the rule
         api_bp.add_url_rule(get_collection_rule, endpoint=collection_endpoint.__name__, view_func=collection_endpoint)
 
@@ -438,16 +517,14 @@ class JSONAPIRouteRegistrar(object):
              if the sort/filter criteriae are incorrect
             """
             url_prefix = request.host_url[:-1] + self.url_prefix
-            f_obj, kwargs, errors = facade_class.get_resource_facade(url_prefix, id)
 
+            w_rel_links, w_rel_data = JSONAPIRouteRegistrar.get_relationships_mode(request.args)
+            f_obj, kwargs, errors = facade_class.get_resource_facade(url_prefix, id,
+                                                                     with_relationships_links=w_rel_links,
+                                                                     with_relationships_data=w_rel_data)
             if f_obj is None:
                 return JSONAPIResponseFactory.make_errors_response(errors, **kwargs)
             else:
-
-                # should we retrieve relationships too ?
-                w_rel_links, w_rel_data = JSONAPIRouteRegistrar.get_relationships_mode(request.args)
-                f_obj.set_relationships_mode(w_rel_links, w_rel_data)
-
                 links = {
                     "self": request.url
                 }
@@ -467,7 +544,7 @@ class JSONAPIRouteRegistrar(object):
                 )
 
         single_obj_endpoint.__name__ = "%s_%s" % (
-        facade_class.TYPE_PLURAL.replace("-", "_"), single_obj_endpoint.__name__)
+            facade_class.TYPE_PLURAL.replace("-", "_"), single_obj_endpoint.__name__)
         # register the rule
         api_bp.add_url_rule(single_obj_rule, endpoint=single_obj_endpoint.__name__, view_func=single_obj_endpoint)
 
@@ -597,7 +674,7 @@ class JSONAPIRouteRegistrar(object):
                 if resource_data is None:
                     count = 0
                 else:
-                    count = 1
+                    count = len(resource_data)
                 paginated_links = {}
                 links = {
                     "self": request.url

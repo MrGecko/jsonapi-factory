@@ -39,13 +39,20 @@ class DocumentFacade(JSONAPIAbstractFacade):
             e = DocumentFacade(url_prefix, e)
         return e, kwargs, errors
 
+    # noinspection PyArgumentList
     @staticmethod
     @decorator_function_with_arguments("I should be protected", "by an auth", "system !")
     def create_resource(id, attributes, related_resources):
         resource = None
         errors = None
         try:
-            doc = Document(id=id, title=attributes.get("title"), subtitle=attributes.get("subtitle"))
+            _g = attributes.get
+            doc = Document(
+                id=id,
+                title=_g("title"),
+                subtitle=_g("subtitle"),
+                origin_date_id=_g("origin-date-id")
+            )
             doc.editors = related_resources.get("editors")
             db.session.add(doc)
             db.session.commit()
@@ -97,6 +104,7 @@ class DocumentFacade(JSONAPIAbstractFacade):
                 "id": self.obj.id,
                 "title": self.obj.title,
                 "subtitle": self.obj.subtitle,
+                "origin-date-id": self.obj.origin_date.id if self.obj.origin_date else None
             },
             "meta": self.meta,
             "links": {

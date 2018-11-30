@@ -1,4 +1,3 @@
-from app import db
 from app.api.abstract_facade import JSONAPIAbstractFacade
 from app.models import Document
 
@@ -7,9 +6,9 @@ from app.models import Document
 def decorator_function_with_arguments(arg1, arg2, arg3):
     def wrap(f):
         print("Wrapping", f)
-        def wrapped_f(*args):
+        def wrapped_f(*args, **kwargs):
             print("Inside wrapped_f()")
-            res = f(*args)
+            res = f(*args, **kwargs)
             return res
         return wrapped_f
     return wrap
@@ -28,53 +27,46 @@ class DocumentFacade(JSONAPIAbstractFacade):
 
     @staticmethod
     @decorator_function_with_arguments("decorated", "resource", "!")
-    def get_resource_facade(url_prefix, doc_id):
+    def get_resource_facade(url_prefix, doc_id, **kwargs):
         e = Document.query.filter(Document.id == doc_id).first()
         if e is None:
             kwargs = {"status": 404}
             errors = [{"status": 404, "title": "document %s does not exist" % doc_id}]
         else:
+            e = DocumentFacade(url_prefix, e, **kwargs)
             kwargs = {}
             errors = []
-            e = DocumentFacade(url_prefix, e)
         return e, kwargs, errors
 
-    # noinspection PyArgumentList
     @staticmethod
-    @decorator_function_with_arguments("I should be protected", "by an auth", "system !")
-    def create_resource(id, attributes, related_resources):
-        resource = None
-        errors = None
-        try:
-            _g = attributes.get
-            doc = Document(
-                id=id,
-                title=_g("title"),
-                subtitle=_g("subtitle"),
-                origin_date_id=_g("origin-date-id")
-            )
-            doc.editors = related_resources.get("editors")
-            db.session.add(doc)
-            db.session.commit()
-            resource = doc
-        except Exception as e:
-            print(e)
-            errors = [{"status": 403, "title": "Error creating resource 'Document' with data: %s" % (str([id, attributes, related_resources]))}]
-            db.session.rollback()
-        return resource, errors
+    def create_resource(model, obj_id, attributes, related_resources):
+        if "origin-date-range-label" in attributes:
+            attributes["origin_date"] = attributes.pop("origin-date-range-label")
+        return JSONAPIAbstractFacade.create_resource(model, obj_id, attributes, related_resources)
 
-    def get_editors_resource_identifiers(self):
-        from app.api.editor.facade import EditorFacade
-        return [] if self.obj.editors is None else [EditorFacade.make_resource_identifier(e.id, EditorFacade.TYPE)
-                                                    for e in self.obj.editors]
+    @property
+    def resource(self):
+        resource = {
+            **self.resource_identifier,
+            "attributes": {
+                "id": self.obj.id,
+                "title": self.obj.title,
+                "subtitle": self.obj.subtitle,
+                "origin-date-id": self.obj.origin_date.id if self.obj.origin_date else None
+            },
+            "meta": self.meta,
+            "links": {
+                "self": self.self_link
+            }
+        }
 
-    @decorator_function_with_arguments("decorated", "relationship", "getter !")
-    def get_editors_resources(self):
-        from app.api.editor.facade import EditorFacade
-        return [] if self.obj.editors is None else [EditorFacade(self.url_prefix, e,
-                                                                 self.with_relationships_links,
-                                                                 self.with_relationships_data).resource
-                                                    for e in self.obj.editors]
+        if self.obj.origin_date:
+            resource["attributes"]["origin-date-range-label"] = self.obj.origin_date.range_label
+
+        if self.with_relationships_links:
+            resource["relationships"] = self.get_exposed_relationships()
+
+        return resource
 
     def __init__(self, *args, **kwargs):
         super(DocumentFacade, self).__init__(*args, **kwargs)
@@ -91,29 +83,11 @@ class DocumentFacade(JSONAPIAbstractFacade):
             A dict describing the corresponding JSONAPI resource object
         """
 
+        from app.api.editor.facade import EditorFacade
         self.relationships = {
             "editors": {
                 "links": self._get_links(rel_name="editors"),
-                "resource_identifier_getter": self.get_editors_resource_identifiers,
-                "resource_getter": self.get_editors_resources
+                "resource_identifier_getter": self.get_related_resource_identifiers(EditorFacade, "editors", to_many=True),
+                "resource_getter": self.get_related_resources(EditorFacade, "editors", to_many=True),
             },
         }
-        self.resource = {
-            **self.resource_identifier,
-            "attributes": {
-                "id": self.obj.id,
-                "title": self.obj.title,
-                "subtitle": self.obj.subtitle,
-                "origin-date-id": self.obj.origin_date.id if self.obj.origin_date else None
-            },
-            "meta": self.meta,
-            "links": {
-                "self": self.self_link
-            }
-        }
-
-        if self.obj.origin_date:
-            self.resource["attributes"]["origin-date-range-label"] = self.obj.origin_date.range_label
-
-        if self.with_relationships_links:
-            self.resource["relationships"] = self.get_exposed_relationships()

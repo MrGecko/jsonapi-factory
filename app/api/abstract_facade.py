@@ -17,7 +17,6 @@ class JSONAPIAbstractFacade(object):
         self.url_prefix = url_prefix
         self.with_relationships_data = with_relationships_data
         self.with_relationships_links = with_relationships_links
-
         self.self_link = "{url_prefix}/{type_plural}/{id}".format(
             url_prefix=self.url_prefix, type_plural=self.TYPE_PLURAL, id=self.id
         )
@@ -37,11 +36,13 @@ class JSONAPIAbstractFacade(object):
         }
 
         self.relationships = {}
-        self.resource = {}
-        self.resource_decorators = {}
 
     @property
     def id(self):
+        raise NotImplementedError
+
+    @property
+    def resource(self):
         raise NotImplementedError
 
     @property
@@ -64,21 +65,171 @@ class JSONAPIAbstractFacade(object):
         raise NotImplementedError
 
     @staticmethod
-    def create_resource(id, attributes, related_resources):
-        resource = None
+    def post_resource(model, obj_id, attributes, related_resources):
+        """
+        Instantiate the obj but do not commit it
+        :param model:
+        :param obj_id:
+        :param attributes:
+        :param related_resources:
+        :return:
+        """
+        print("CREATING RESOURCE:", obj_id, attributes, related_resources)
+
+        for att in attributes.keys():
+            attributes[att.replace("-", "_")] = attributes.pop(att)
+
+        attributes["id"] = obj_id
+        print("  setting attributes", attributes)
+        resource = model(**attributes)
+
+        # set related resources
+        for rel_name, rel_data in related_resources.items():
+            rel_name = rel_name.replace("-", "_")
+            print("  setting", rel_name, rel_data)
+            if hasattr(resource, rel_name):
+                try:
+                    setattr(resource, rel_name, rel_data)
+                except Exception:
+                    setattr(resource, rel_name, rel_data[0])
+
+        return resource
+
+    @staticmethod
+    def create_resource(model, obj_id, attributes, related_resources):
         errors = None
-        print("creating resource '%s' from: " % id, attributes, related_resources)
-        #return resource, errors
-        raise NotImplementedError
+        resource = None
+        try:
+            resource = JSONAPIAbstractFacade.post_resource(model, obj_id, attributes, related_resources)
+            db.session.add(resource)
+            db.session.commit()
+        except Exception as e:
+            print(e)
+            errors = {
+                "status": 403,
+                "title": "Error creating resource with data: %s" % str([attributes, related_resources]),
+                "detail": str(e)
+            }
+            db.session.rollback()
+        return resource, errors
 
+    # noinspection PyArgumentList
+    @staticmethod
+    def patch_resource(obj, obj_type, attributes, related_resources, append):
+        """
+        Update the obj but do not commit it
+        :param append:
+        :param obj:
+        :param obj_type:
+        :param attributes:
+        :param related_resources:
+        :return:
+        """
+        print("UPDATING RESOURCE:", obj, obj_type, attributes, related_resources)
+        # update attributes
+        for att, att_value in attributes.items():
+            att_name = att.replace("-", "_")
+            print("  setting", att, att_value)
+            if hasattr(obj, att_name):
+                setattr(obj, att_name, att_value)
+            else:
+                raise AttributeError("Attribute %s does not exist" % att_name)
+
+        # update related resources
+        for rel_name, rel_data in related_resources.items():
+            rel_name = rel_name.replace("-", "_")
+            print("  setting", rel_name, rel_data)
+            if hasattr(obj, rel_name):
+                # append (POST) or replace (PATCH) replace related resources ?
+                if not append:
+                    try:
+                        setattr(obj, rel_name, rel_data)
+                    except Exception:
+                        setattr(obj, rel_name, rel_data[0])
+                else:
+                    try:
+                        setattr(obj, rel_name, getattr(obj, rel_name, []) + rel_data)
+                    except Exception:
+                        setattr(obj, rel_name, getattr(obj, rel_name, []) + rel_data[0])
+            else:
+                raise AttributeError("Relationship %s does not exist" % rel_name)
+        return obj
 
     @staticmethod
-    def update_resource(*args, **kwargs):
-        raise NotImplementedError
+    def update_resource(obj, obj_type, attributes, related_resources, append=False):
+        errors = None
+        resource = None
+        try:
+            resource = JSONAPIAbstractFacade.patch_resource(obj, obj_type, attributes, related_resources, append)
+            db.session.add(resource)
+            db.session.commit()
+        except Exception as e:
+            print(e)
+            errors = {
+                "status": 403,
+                "title": "Error updating resource '%s' with data: %s" % (
+                    obj_type, str([id, attributes, related_resources, append])),
+                "detail": str(e)
+            }
+            db.session.rollback()
+        return resource, errors
 
     @staticmethod
-    def delete_resource(*args, **kwargs):
-        raise NotImplementedError
+    def delete_resource(obj):
+        errors = None
+        try:
+            print("DELETING RESOURCE:", obj)
+            db.session.delete(obj)
+            db.session.commit()
+        except Exception as e:
+            errors = {
+                "status": 404,
+                "title": "This resource does not exist"
+            }
+            db.session.rollback()
+        return errors
+
+    def get_related_resource_identifiers(self, facade_class, rel_field, to_many=False, decorators=()):
+        def func():
+            field = getattr(self.obj, rel_field)
+            if to_many:
+                return [] if field is None else [
+                    facade_class.make_resource_identifier(f.id, facade_class.TYPE)
+                    for f in field
+                ]
+            else:
+                return None if field is None else facade_class.make_resource_identifier(field.id, facade_class.TYPE)
+
+        # APPLY decorators if any
+        for dec in decorators:
+            func = dec(func)
+
+        return func
+
+    def get_related_resources(self, facade_class,  rel_field, to_many=False, decorators=()):
+        def func():
+            field = getattr(self.obj, rel_field)
+            if to_many:
+                if field is None:
+                    return []
+                else:
+                    return [
+                        facade_class(self.url_prefix, rel_obj,
+                                     self.with_relationships_links,  self.with_relationships_data).resource
+                        for rel_obj in field
+                    ]
+            else:
+                if field is None:
+                    return None
+                else:
+                    return facade_class(self.url_prefix, field,
+                                        self.with_relationships_links, self.with_relationships_data).resource
+
+        # APPLY decorators if any
+        for dec in decorators:
+            func = dec(func)
+
+        return func
 
     def set_relationships_mode(self, w_rel_links, w_rel_data):
         self.with_relationships_links = w_rel_links
@@ -89,36 +240,6 @@ class JSONAPIAbstractFacade(object):
             "self": "{template}/{rel_name}".format(template=self._links_template["self"], rel_name=rel_name),
             "related": "{template}/{rel_name}".format(template=self._links_template["related"], rel_name=rel_name)
         }
-
-    def set_resource_identifiers(self, attr, resource_identifiers, append_mode):
-        errors = {}
-        try:
-            if append_mode:
-                # append
-                old_vals = getattr(self.obj, attr)
-                setattr(self.obj, attr, old_vals + resource_identifiers)
-            else:
-                # replace
-                setattr(self.obj, attr, resource_identifiers)
-
-            db.session.add(self.obj)
-            db.session.commit()
-        except Exception as e:
-            print(e)
-            errors = {
-                "status": 403,
-                "title": "Error setting relationship",
-                "detail": str(e)
-            }
-            db.session.rollback()
-        return errors
-
-    def set_relationships(self, rel_name, resources, append_mode=True):
-        rel = self.relationships[rel_name]
-        if "resource_attribute" in rel:
-            self.set_resource_identifiers(rel["resource_attribute"], resources, append_mode)
-        else:
-            raise KeyError("Relationship '%s' has no resource identifier setter" % rel_name)
 
     def get_exposed_relationships(self):
         if self.with_relationships_data:

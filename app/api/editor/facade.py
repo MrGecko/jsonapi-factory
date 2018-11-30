@@ -13,28 +13,36 @@ class EditorFacade(JSONAPIAbstractFacade):
     def id(self):
         return self.obj.id
 
-    def get_documents_resource_identifiers(self):
-        from app.api.document.facade import DocumentFacade
-        return [] if self.obj.documents is None else [DocumentFacade.make_resource_identifier(d.id, DocumentFacade.TYPE)
-                                                      for d in self.obj.documents]
-
-    def get_documents_resources(self):
-        from app.api.document.facade import DocumentFacade
-        return [] if self.obj.documents is None else [DocumentFacade(self.url_prefix, d,
-                                                                     self.with_relationships_links,
-                                                                     self.with_relationships_data).resource
-                                                      for d in self.obj.documents]
-
     @staticmethod
-    def get_obj(doc_id):
+    def get_resource_facade(url_prefix, doc_id, **kwargs):
         e = Editor.query.filter(Editor.id == doc_id).first()
         if e is None:
             kwargs = {"status": 404}
             errors = [{"status": 404, "title": "editor %s does not exist" % doc_id}]
         else:
+            e = EditorFacade(url_prefix, e, **kwargs)
             kwargs = {}
             errors = []
         return e, kwargs, errors
+
+    @property
+    def resource(self):
+        resource = {
+            **self.resource_identifier,
+            "attributes": {
+                "id": self.obj.id,
+                "name": self.obj.name
+            },
+            "meta": self.meta,
+            "links": {
+                "self": self.self_link
+            }
+        }
+
+        if self.with_relationships_links:
+            resource["relationships"] = self.get_exposed_relationships()
+
+        return resource
 
     def __init__(self, *args, **kwargs):
         super(EditorFacade, self).__init__(*args, **kwargs)
@@ -51,24 +59,11 @@ class EditorFacade(JSONAPIAbstractFacade):
             A dict describing the corresponding JSONAPI resource object
         """
 
+        from app.api.document.facade import DocumentFacade
         self.relationships = {
             "documents": {
                 "links": self._get_links(rel_name="documents"),
-                "resource_identifier_getter": self.get_documents_resource_identifiers,
-                "resource_getter": self.get_documents_resources
+                "resource_identifier_getter": self.get_related_resource_identifiers(DocumentFacade, "documents", True),
+                "resource_getter": self.get_related_resources(DocumentFacade, "documents", True),
             },
         }
-
-        self.resource = {
-            **self.resource_identifier,
-            "attributes": {
-                "id": self.obj.id,
-                "name": self.obj.name
-            },
-            "meta": self.meta,
-            "links": {
-                "self": self.self_link
-            }
-        }
-        if self.with_relationships_links:
-            self.resource["relationships"] = self.get_exposed_relationships()

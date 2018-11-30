@@ -41,6 +41,15 @@ class TestBaseServer(TestCase):
             db.session.execute(table.delete())
         db.session.commit()
 
+    def load_sql_fixtures(self, fixtures):
+        with self.app.app_context(), db.engine.connect() as connection:
+            for fixture in fixtures:
+                with open(fixture) as f:
+                    for _s in f.readlines():
+                        trans = connection.begin()
+                        connection.execute(_s, multi=True)
+                        trans.commit()
+
     def load_fixtures(self):
         raise NotImplementedError
 
